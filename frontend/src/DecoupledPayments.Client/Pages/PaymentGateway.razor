@@ -1,0 +1,182 @@
+@page "/"
+@page "/payment-gateway"
+@using DecoupledPayments.Client.Models
+@using DecoupledPayments.Client.Services
+@inject PaymentApiClient ApiClient
+
+<PageTitle>Pasarela de Pago Desacoplada</PageTitle>
+
+<div class="container mt-4" style="max-width: 650px;">
+    <div class="card shadow-sm border-0">
+        <div class="card-header text-white p-3" style="background-color: #003366;">
+            <h1 class="mb-0 fs-5"><i class="bi bi-shield-lock me-2"></i>Pasarela de Pago Desacoplada (PSE)</h1>
+        </div>
+        <div class="card-body p-4">
+
+            @if (Step == 1)
+            {
+                <h5 class="card-title text-secondary mb-3">Paso 1: Iniciación de Pago</h5>
+                <EditForm Model="InitiateModel" OnValidSubmit="HandleInitiate">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">ID Comercio</label>
+                        <InputText class="form-control" @bind-Value="InitiateModel.MerchantId" readonly />
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Documento del Usuario</label>
+                        <InputText class="form-control" @bind-Value="InitiateModel.UserDocumentId" />
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Monto a Pagar (@InitiateModel.Currency)</label>
+                        <InputNumber class="form-control" @bind-Value="InitiateModel.Amount" />
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100" disabled="@IsLoading">
+                        @(IsLoading ? "Procesando..." : "Iniciar Transacción")
+                    </button>
+                </EditForm>
+            }
+            else if (Step == 2)
+            {
+                <h5 class="card-title text-secondary mb-3">Paso 2: Validación de Clave Dinámica / OTP</h5>
+                <div class="alert alert-info py-2 fs-6">
+                    <strong>Nota APOC:</strong> Ingrese el OTP simulado <code>123456</code>.
+                </div>
+                <EditForm Model="OtpModel" OnValidSubmit="HandleVerifyOtp">
+                    <div class="mb-3">
+                        <label class="form-label">Código OTP (6 dígitos)</label>
+                        <InputText class="form-control form-control-lg text-center letter-spacing-2" @bind-Value="OtpModel.OtpCode" maxlength="6" />
+                    </div>
+                    <button type="submit" class="btn btn-success w-100" disabled="@IsLoading">
+                        @(IsLoading ? "Verificando OTP..." : "Validar y Obtener Token")
+                    </button>
+                </EditForm>
+            }
+            else if (Step == 3)
+            {
+                <h5 class="card-title text-secondary mb-3">Paso 3: Autorización y Débito Final</h5>
+                <p class="text-muted small">Su transacción ha sido autorizada. El Token JWT de uso único ha sido emitido con validez de 60 segundos.</p>
+                <button class="btn btn-warning btn-lg w-100 mb-2" @onclick="HandleExecute" disabled="@IsLoading">
+                    @(IsLoading ? "Ejecutando..." : "Ejecutar Débito Bancario")
+                </button>
+
+                <button class="btn btn-outline-danger w-100" @onclick="HandleReplayTest" disabled="@(IsLoading || string.IsNullOrEmpty(TransactionToken))">
+                    <i class="bi bi-exclamation-triangle me-1"></i>Probar Ataque de Reinteracción (Replay Test)
+                </button>
+            }
+
+            @if (!string.IsNullOrEmpty(ErrorMessage))
+            {
+                <div class="alert alert-danger mt-3 mb-0" role="alert">
+                    <strong>Error de Seguridad / Middleware:</strong> @ErrorMessage
+                </div>
+            }
+
+            @if (ExecuteResult != null)
+            {
+                <div class="alert alert-success mt-3 mb-0">
+                    <h6 class="alert-heading fw-bold">¡Pago Exitoso!</h6>
+                    <p class="mb-1"><strong>Referencia Banco:</strong> @ExecuteResult.BankReference</p>
+                    <p class="mb-0"><strong>Fecha:</strong> @ExecuteResult.ExecutedAt.ToLocalTime()</p>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private int Step = 1;
+    private bool IsLoading = false;
+    private string? ErrorMessage;
+
+    private InitiatePaymentModel InitiateModel = new();
+    private VerifyOtpModel OtpModel = new();
+    private ExecutePaymentModel ExecuteModel = new();
+
+    private string TransactionToken = string.Empty;
+    private string IdempotencyKey = Guid.NewGuid().ToString();
+    private ExecutePaymentResult? ExecuteResult;
+
+    private async Task HandleInitiate()
+    {
+        IsLoading = true;
+        ErrorMessage = null;
+        try
+        {
+            var res = await ApiClient.InitiateAsync(InitiateModel);
+            if (res != null)
+            {
+                OtpModel.TransactionId = res.TransactionId;
+                OtpModel.SessionToken = res.SessionToken;
+                ExecuteModel.TransactionId = res.TransactionId;
+                Step = 2;
+            }
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = ex.Message;
+        }
+        finally { IsLoading = false; }
+    }
+
+    private async Task HandleVerifyOtp()
+    {
+        IsLoading = true;
+        ErrorMessage = null;
+        try
+        {
+            var res = await ApiClient.VerifyOtpAsync(OtpModel);
+            if (res != null)
+            {
+                TransactionToken = res.TransactionToken;
+                Step = 3;
+            }
+        }
+        catch (Exception)
+        {
+            ErrorMessage = "OTP incorrecto o expirado.";
+        }
+        finally { IsLoading = false; }
+    }
+
+    private async Task HandleExecute()
+    {
+        IsLoading = true;
+        ErrorMessage = null;
+        try
+        {
+            var (success, result, error) = await ApiClient.ExecutePaymentAsync(ExecuteModel, TransactionToken, IdempotencyKey);
+            if (success)
+            {
+                ExecuteResult = result;
+            }
+            else
+            {
+                ErrorMessage = error;
+            }
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = ex.Message;
+        }
+        finally { IsLoading = false; }
+    }
+
+    private async Task HandleReplayTest()
+    {
+        IsLoading = true;
+        ErrorMessage = null;
+        try
+        {
+            // Se utiliza el MISMO transactionToken para simular una reinteracción/ataque
+            var (success, _, error) = await ApiClient.ExecutePaymentAsync(ExecuteModel, TransactionToken, Guid.NewGuid().ToString());
+            if (!success)
+            {
+                ErrorMessage = error; // Debería retornar HTTP 409 TOKEN_ALREADY_USED desde el middleware
+            }
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = ex.Message;
+        }
+        finally { IsLoading = false; }
+    }
+}

@@ -1,0 +1,9 @@
+# .NET
+bin/
+obj/
+.vs/
+*.user
+*.suo
+# Secretos locales
+*.pem
+.env

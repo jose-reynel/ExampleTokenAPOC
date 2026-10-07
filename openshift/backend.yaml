@@ -1,0 +1,118 @@
+# Backend – DecoupledPayments.WebApi
+# Placeholders: __PROJECT__ (proyecto/namespace) y __APPS_DOMAIN__ (dominio de apps del clúster)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dp-backend-config
+  labels:
+    app: dp-backend
+    app.kubernetes.io/part-of: decoupled-payments
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  # Origen EXACTO del frontend (la Route del frontend, con https)
+  Cors__AllowedOrigins__0: "https://dp.__APPS_DOMAIN__"
+  Jwt__Issuer: "decoupled-payments-auth"
+  Jwt__Audience: "decoupled-payments-api"
+  Jwt__TransactionTokenTtlSeconds: "60"
+  # Crea el esquema al arrancar. Use "None" si el DBA aplica los scripts de /database.
+  Database__Initialization: "EnsureCreated"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dp-backend
+  labels:
+    app: dp-backend
+    app.kubernetes.io/part-of: decoupled-payments
+spec:
+  # Estado en la base de datos. Para más de 1 réplica configure una clave RSA compartida
+  # (secret dp-jwt-key, ver docs/06-openshift.md) y cree el esquema antes (Initialization=None) o con 1 réplica.
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: dp-backend
+  template:
+    metadata:
+      labels:
+        app: dp-backend
+    spec:
+      containers:
+        - name: dp-backend
+          image: image-registry.openshift-image-registry.svc:5000/__PROJECT__/dp-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: dp-backend-config
+            # Database__Provider y ConnectionStrings__Default (base de datos)
+            - secretRef:
+                name: dp-db-secret
+            # Opcional: Jwt__PrivateKeyPem (clave RSA compartida entre réplicas)
+            - secretRef:
+                name: dp-jwt-key
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dp-backend
+  labels:
+    app: dp-backend
+    app.kubernetes.io/part-of: decoupled-payments
+spec:
+  selector:
+    app: dp-backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: dp-backend
+  labels:
+    app: dp-backend
+    app.kubernetes.io/part-of: decoupled-payments
+spec:
+  host: dp-api.__APPS_DOMAIN__
+  to:
+    kind: Service
+    name: dp-backend
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

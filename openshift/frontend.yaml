@@ -1,0 +1,101 @@
+# Frontend – Blazor WebAssembly servido con nginx sin privilegios
+# Placeholders: __PROJECT__ (proyecto/namespace) y __APPS_DOMAIN__ (dominio de apps del clúster)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dp-frontend-config
+  labels:
+    app: dp-frontend
+    app.kubernetes.io/part-of: decoupled-payments
+data:
+  # URL pública del backend (Route), con "/" final: la usa el NAVEGADOR
+  API_BASE_URL: "https://dp-api.__APPS_DOMAIN__/"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dp-frontend
+  labels:
+    app: dp-frontend
+    app.kubernetes.io/part-of: decoupled-payments
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dp-frontend
+  template:
+    metadata:
+      labels:
+        app: dp-frontend
+    spec:
+      containers:
+        - name: dp-frontend
+          image: image-registry.openshift-image-registry.svc:5000/__PROJECT__/dp-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: dp-frontend-config
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dp-frontend
+  labels:
+    app: dp-frontend
+    app.kubernetes.io/part-of: decoupled-payments
+spec:
+  selector:
+    app: dp-frontend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: dp-frontend
+  labels:
+    app: dp-frontend
+    app.kubernetes.io/part-of: decoupled-payments
+spec:
+  host: dp.__APPS_DOMAIN__
+  to:
+    kind: Service
+    name: dp-frontend
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

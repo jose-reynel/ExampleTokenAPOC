@@ -1,0 +1,75 @@
+# Backend + frontend + base de datos (PostgreSQL o SQL Server según el perfil).
+#
+#   PostgreSQL : docker compose --env-file env/postgres.env  --profile postgres  up -d --build
+#   SQL Server : docker compose --env-file env/sqlserver.env --profile sqlserver up -d --build
+#
+# Base de datos externa: omita los perfiles y defina DB_PROVIDER / DB_CONNECTION en el entorno.
+name: decoupled-payments
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    container_name: dp-postgres
+    environment:
+      POSTGRES_DB: decoupledpayments
+      POSTGRES_USER: dp_user
+      POSTGRES_PASSWORD: dp_pass_dev
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["sqlserver"]
+    container_name: dp-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"
+      MSSQL_SA_PASSWORD: "Dev_Passw0rd_2026"
+    volumes:
+      - sqldata:/var/opt/mssql
+    ports:
+      - "1433:1433"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    image: decoupled-payments-backend:1.1.0
+    container_name: dp-backend
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Database__Provider: "${DB_PROVIDER:-PostgreSql}"
+      Database__Initialization: "${DB_INITIALIZATION:-EnsureCreated}"
+      ConnectionStrings__Default: "${DB_CONNECTION:-Host=postgres;Port=5432;Database=decoupledpayments;Username=dp_user;Password=dp_pass_dev}"
+      # Origen EXACTO desde el que el navegador carga el frontend
+      Cors__AllowedOrigins__0: "http://localhost:5200"
+      Jwt__Issuer: "decoupled-payments-auth"
+      Jwt__Audience: "decoupled-payments-api"
+      Jwt__TransactionTokenTtlSeconds: "60"
+      # Opcional: clave RSA compartida (necesaria para más de una réplica). Vacío = clave efímera.
+      Jwt__PrivateKeyPem: "${JWT_PRIVATE_KEY_PEM:-}"
+    ports:
+      - "5100:8080"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    image: decoupled-payments-frontend:1.0.0
+    container_name: dp-frontend
+    environment:
+      # URL del backend tal como la ve el NAVEGADOR (no el nombre interno "backend")
+      API_BASE_URL: "http://localhost:5100/"
+    ports:
+      - "5200:8080"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  sqldata:

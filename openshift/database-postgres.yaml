@@ -1,0 +1,116 @@
+# PostgreSQL de apoyo para la APOC (pruebas/desarrollo) con imagen sclorg compatible con OpenShift.
+# Para producción use un servicio gestionado u operador (CloudNativePG, Crunchy, RDS…) y el modo "external".
+# Placeholders: __DB_PASSWORD__
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dp-postgres-credentials
+  labels:
+    app: dp-postgres
+    app.kubernetes.io/part-of: decoupled-payments
+type: Opaque
+stringData:
+  POSTGRESQL_USER: dp_user
+  POSTGRESQL_PASSWORD: "__DB_PASSWORD__"
+  POSTGRESQL_DATABASE: decoupledpayments
+---
+# Secret que consume el backend (misma forma para base interna o externa)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dp-db-secret
+  labels:
+    app: dp-backend
+    app.kubernetes.io/part-of: decoupled-payments
+type: Opaque
+stringData:
+  Database__Provider: PostgreSql
+  ConnectionStrings__Default: "Host=dp-postgres;Port=5432;Database=decoupledpayments;Username=dp_user;Password=__DB_PASSWORD__"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dp-postgres-data
+  labels:
+    app: dp-postgres
+    app.kubernetes.io/part-of: decoupled-payments
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dp-postgres
+  labels:
+    app: dp-postgres
+    app.kubernetes.io/part-of: decoupled-payments
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dp-postgres
+  template:
+    metadata:
+      labels:
+        app: dp-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: quay.io/sclorg/postgresql-16-c9s:latest
+          ports:
+            - name: pg
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: dp-postgres-credentials
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -h 127.0.0.1 -p 5432"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -h 127.0.0.1 -p 5432"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: dp-postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dp-postgres
+  labels:
+    app: dp-postgres
+    app.kubernetes.io/part-of: decoupled-payments
+spec:
+  selector:
+    app: dp-postgres
+  ports:
+    - name: pg
+      port: 5432
+      targetPort: pg
